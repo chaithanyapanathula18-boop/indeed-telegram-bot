@@ -1,64 +1,38 @@
-name: Indeed Tech Jobs Alert
+name: Indeed Telegram Job Alert
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # Every 30 minutes
-  workflow_dispatch:           # Manual trigger for testing
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
-  search-jobs:
+  run-bot:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Restore previous job list
+      - name: Restore seen jobs cache
         uses: actions/cache@v3
         with:
           path: seen_jobs.json
-          key: indeed-seen-jobs
+          key: seen-jobs-cache
+          restore-keys: seen-jobs-cache
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Run job search
+      - name: Run bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python3 bot.py
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python bot.py
 
-      - name: Save job list for next run
+      - name: Save seen jobs cache
         uses: actions/cache@v3
         with:
           path: seen_jobs.json
-          key: indeed-seen-jobs
-```
-
----
-
-## Step 6 — Create `Procfile` (for hosting)
-
-Create a file called **`Procfile`** (no extension):
-```
-worker: python3 cron.py
-```
-
----
-
-## Your final folder looks like:
-```
-indeed-telegram-bot/
-├── .github/
-│   └── workflows/
-│       └── job_alert.yml          ← GitHub Actions config
-├── bot.py                         ← Main script
-├── cron.py                        ← Runs bot every 30 mins
-├── requirements.txt               ← Python libraries
-├── Procfile                       ← For hosting
-└── seen_jobs.json                 ← Auto-created, don't edit
+          key: seen-jobs-cache
