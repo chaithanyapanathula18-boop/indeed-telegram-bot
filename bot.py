@@ -3,10 +3,10 @@ import json
 import httpx
 from datetime import datetime
 
-TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-SEEN_JOBS_FILE   = "seen_jobs.json"
+SEEN_JOBS_FILE    = "seen_jobs.json"
 
 # ── load / save seen jobs ────────────────────────────────────────
 def load_seen():
@@ -21,87 +21,138 @@ def save_seen(ids: set):
 
 # ── ask Claude to search Indeed ──────────────────────────────────
 def search_jobs_via_claude() -> list:
-    prompt = """Search Indeed for ALL of these tech jobs in Dublin, Ireland and remote Ireland:
-- software engineer
-- frontend developer
-- backend developer
-- fullstack developer
-- devops engineer
-- cloud engineer
-- data engineer
-- data scientist
-- machine learning engineer
-- AI engineer
-- mobile developer
-- cybersecurity engineer
-- QA engineer
-- platform engineer
+    prompt = """Use the Indeed search tool to search for tech jobs in Dublin Ireland.
 
-For EVERY job found return a JSON array with this exact format:
+Run these searches one by one:
+1. "software engineer" in Dublin, IE
+2. "frontend developer" in Dublin, IE
+3. "backend developer" in Dublin, IE
+4. "devops engineer" in Dublin, IE
+5. "data engineer" in Dublin, IE
+6. "mobile developer" in Dublin, IE
+7. "AI machine learning engineer" in Dublin, IE
+8. "cybersecurity engineer" in Dublin, IE
+
+After searching, return ONLY a valid JSON array like this (no markdown, no explanation, just raw JSON):
 [
   {
-    "id": "unique job id",
-    "title": "job title",
-    "company": "company name",
-    "location": "location",
-    "salary": "salary or null",
-    "posted": "date posted",
-    "url": "application url",
-    "category": "Frontend|Backend|Fullstack|DevOps|Data|AI/ML|Mobile|Security|QA|Other"
+    "id": "job_id_here",
+    "title": "Job Title",
+    "company": "Company Name",
+    "location": "Dublin, Ireland",
+    "salary": "€60,000 - €80,000",
+    "posted": "March 14, 2026",
+    "url": "https://apply-link.com",
+    "category": "Backend"
   }
 ]
-Return ONLY the JSON array, no other text."""
 
-    response = httpx.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        },
-        json={
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 4000,
-            "mcp_servers": [
-                {
-                    "type": "url",
-                    "url": "https://mcp.indeed.com/claude/mcp",
-                    "name": "indeed-mcp"
-                }
-            ],
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        },
-        timeout=60
-    )
+Category must be one of: Frontend, Backend, Fullstack, DevOps, Data, AI/ML, Mobile, Security, QA, Other.
+Return ONLY the raw JSON array. No markdown fences. No explanation."""
 
-    data = response.json()
-    raw = ""
-    for block in data.get("content", []):
-        if block.get("type") == "text":
-            raw += block["text"]
+    try:
+        response = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "mcp-client-2025-04-04",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 8000,
+                "mcp_servers": [
+                    {
+                        "type": "url",
+                        "url": "https://mcp.indeed.com/claude/mcp",
+                        "name": "indeed-mcp"
+                    }
+                ],
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            },
+            timeout=120
+        )
 
-    # parse JSON from response
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+        data = response.json()
+        print(f"Claude API status: {response.status_code}")
+
+        # ── extract all text blocks ──────────────────────────────
+        all_text = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                all_text += block["text"]
+
+        print(f"Raw response preview: {all_text[:300]}")
+
+        if not all_text.strip():
+            print("Empty response from Claude API")
+            print(f"Full response: {json.dumps(data, indent=2)}")
+            return []
+
+        # ── strip markdown fences if present ────────────────────
+        text = all_text.strip()
+        if "```" in text:
+            parts = text.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("["):
+                    text = part
+                    break
+
+        # ── find JSON array in text ──────────────────────────────
+        start = text.find("[")
+        end   = text.rfind("]") + 1
+        if start == -1 or end == 0:
+            print(f"No JSON array found in response: {text[:500]}")
+            return []
+
+        json_str = text[start:end]
+        jobs = json.loads(json_str)
+        print(f"Found {len(jobs)} jobs from Claude")
+        return jobs
+
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
+        print(f"Text was: {all_text[:500]}")
+        return []
+    except Exception as e:
+        print(f"Claude API error: {e}")
+        return []
 
 # ── send Telegram message ────────────────────────────────────────
 def send_telegram(text: str):
-    httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        },
-        timeout=10
-    )
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False
+            },
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Telegram error: {e}")
+
+# ── category emoji map ────────────────────────────────────────────
+EMOJI = {
+    "Frontend":  "🎨",
+    "Backend":   "⚙️",
+    "Fullstack": "🔄",
+    "DevOps":    "☁️",
+    "Data":      "📊",
+    "AI/ML":     "🤖",
+    "Mobile":    "📱",
+    "Security":  "🔒",
+    "QA":        "🧪",
+    "Other":     "💻"
+}
 
 # ── main ─────────────────────────────────────────────────────────
 def main():
@@ -109,10 +160,17 @@ def main():
     seen = load_seen()
 
     jobs = search_jobs_via_claude()
-    new_jobs = [j for j in jobs if j.get("id") not in seen]
+
+    if not jobs:
+        print("No jobs returned. Check logs above.")
+        return
+
+    # filter already seen
+    new_jobs = [j for j in jobs if str(j.get("id", "")) not in seen]
+    print(f"New jobs (not seen before): {len(new_jobs)}")
 
     if not new_jobs:
-        print("No new jobs found.")
+        print("No new jobs to send.")
         return
 
     # group by category
@@ -121,38 +179,37 @@ def main():
         cat = job.get("category", "Other")
         grouped.setdefault(cat, []).append(job)
 
-    # send summary
-    lines = "\n".join([f"  {cat}: {len(jobs)}" for cat, jobs in sorted(grouped.items())])
+    # summary message
+    lines = "\n".join([
+        f"  {EMOJI.get(cat,'💻')} {cat}: {len(j)}"
+        for cat, j in sorted(grouped.items())
+    ])
     send_telegram(
         f"🚀 <b>{len(new_jobs)} New Tech Jobs in Ireland!</b>\n"
         f"🕐 {datetime.now().strftime('%d %b %Y, %H:%M')}\n\n{lines}"
     )
 
     # send each category
-    for category, jobs in sorted(grouped.items()):
-        emoji = {
-            "Frontend": "🎨", "Backend": "⚙️", "Fullstack": "🔄",
-            "DevOps": "☁️", "Data": "📊", "AI/ML": "🤖",
-            "Mobile": "📱", "Security": "🔒", "QA": "🧪", "Other": "💻"
-        }.get(category, "💻")
+    for category, jobs_list in sorted(grouped.items()):
+        em = EMOJI.get(category, "💻")
+        send_telegram(f"━━━━━━━━━━━━━━━━\n{em} <b>{category}</b> — {len(jobs_list)} jobs")
 
-        send_telegram(f"━━━━━━━━━━━━━━━━\n{emoji} <b>{category}</b> — {len(jobs)} new jobs")
-
-        for job in jobs:
-            salary = job.get("salary") or "Not specified"
+        for job in jobs_list:
+            salary  = job.get("salary") or "Not specified"
+            posted  = job.get("posted", "")
+            url     = job.get("url", "")
             send_telegram(
-                f"💼 <b>{job['title']}</b>\n"
-                f"🏢 {job['company']}\n"
-                f"📍 {job['location']}\n"
+                f"💼 <b>{job.get('title','N/A')}</b>\n"
+                f"🏢 {job.get('company','N/A')}\n"
+                f"📍 {job.get('location','Dublin')}\n"
                 f"💰 {salary}\n"
-                f"📅 {job.get('posted','')}\n"
-                f"🔗 <a href='{job['url']}'>Apply now</a>"
+                f"📅 {posted}\n"
+                f"🔗 <a href='{url}'>Apply now</a>"
             )
-            seen.add(job["id"])
+            seen.add(str(job.get("id", "")))
 
     save_seen(seen)
-    print(f"[{datetime.now()}] Done — sent {len(new_jobs)} jobs.")
+    print(f"[{datetime.now()}] Done — sent {len(new_jobs)} jobs to Telegram.")
 
 if __name__ == "__main__":
     main()
-    
