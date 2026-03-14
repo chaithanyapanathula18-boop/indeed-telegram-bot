@@ -8,6 +8,24 @@ TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 SEEN_JOBS_FILE    = "seen_jobs.json"
 
+SEARCHES = [
+    {"search": "software engineer",          "location": "Dublin", "country_code": "IE"},
+    {"search": "frontend developer",         "location": "Dublin", "country_code": "IE"},
+    {"search": "backend developer",          "location": "Dublin", "country_code": "IE"},
+    {"search": "fullstack developer",        "location": "Dublin", "country_code": "IE"},
+    {"search": "devops engineer",            "location": "Dublin", "country_code": "IE"},
+    {"search": "cloud engineer",             "location": "Dublin", "country_code": "IE"},
+    {"search": "data engineer",              "location": "Dublin", "country_code": "IE"},
+    {"search": "data scientist",             "location": "Dublin", "country_code": "IE"},
+    {"search": "machine learning engineer",  "location": "Dublin", "country_code": "IE"},
+    {"search": "AI engineer",               "location": "Dublin", "country_code": "IE"},
+    {"search": "mobile developer",           "location": "Dublin", "country_code": "IE"},
+    {"search": "cybersecurity engineer",     "location": "Dublin", "country_code": "IE"},
+    {"search": "QA automation engineer",     "location": "Dublin", "country_code": "IE"},
+    {"search": "software engineer",          "location": "Ireland", "country_code": "IE"},
+    {"search": "developer",                  "location": "remote",  "country_code": "IE"},
+]
+
 def load_seen():
     if os.path.exists(SEEN_JOBS_FILE):
         with open(SEEN_JOBS_FILE) as f:
@@ -18,45 +36,27 @@ def save_seen(ids):
     with open(SEEN_JOBS_FILE, "w") as f:
         json.dump(list(ids), f)
 
-SEARCHES = [
-    "software engineer jobs Dublin Ireland indeed.ie 2026",
-    "frontend developer jobs Dublin Ireland indeed.ie 2026",
-    "backend developer jobs Dublin Ireland indeed.ie 2026",
-    "fullstack developer jobs Dublin Ireland indeed.ie 2026",
-    "devops cloud engineer jobs Dublin Ireland indeed.ie 2026",
-    "data engineer scientist jobs Dublin Ireland indeed.ie 2026",
-    "machine learning AI engineer jobs Dublin Ireland indeed.ie 2026",
-    "mobile iOS Android developer jobs Dublin Ireland indeed.ie 2026",
-    "cybersecurity engineer jobs Dublin Ireland indeed.ie 2026",
-    "QA automation engineer jobs Dublin Ireland indeed.ie 2026",
-]
+def search_indeed(params: dict) -> list:
+    """Call Claude API with Indeed MCP to search jobs"""
+    prompt = f"""Use the Indeed search_jobs tool with exactly these parameters:
+- search: "{params['search']}"
+- location: "{params['location']}"
+- country_code: "{params['country_code']}"
 
-def search_jobs(query: str) -> list:
-    today = datetime.now().strftime("%B %d, %Y")
-    prompt = f"""Today is {today}.
-
-Search the web for: "{query}"
-
-From ALL the search results, extract every individual job posting you can find.
-Look carefully at results from indeed.ie, irishjobs.ie, jobs.ie, linkedin.com.
-
-For each job posting return it in this JSON format.
-Return ONLY a raw JSON array, nothing else, no markdown, no explanation:
+After getting results, return ONLY a raw JSON array, no markdown, no explanation:
 [
   {{
-    "id": "companyname-jobtitle-uniqueid",
-    "title": "exact job title",
+    "id": "job_id_from_indeed",
+    "title": "job title",
     "company": "company name",
-    "location": "Dublin, Ireland",
-    "salary": "salary if shown else null",
-    "posted": "date posted if shown else null",
-    "url": "full direct URL to the job posting",
+    "location": "location",
+    "salary": "salary or null",
+    "posted": "date posted",
+    "url": "apply url",
     "category": "Frontend|Backend|Fullstack|DevOps|Data|AI/ML|Mobile|Security|QA|Other"
   }}
 ]
-
-If no jobs found return: []
-Return ONLY the raw JSON array. No text before or after."""
+Return ONLY the raw JSON array."""
 
     try:
         res = httpx.post(
@@ -64,19 +64,30 @@ Return ONLY the raw JSON array. No text before or after."""
             headers={
                 "x-api-key": ANTHROPIC_API_KEY,
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "mcp-client-2025-04-04",
                 "content-type": "application/json"
             },
             json={
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 4000,
-                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "mcp_servers": [{
+                    "type": "url",
+                    "url": "https://mcp.indeed.com/claude/mcp",
+                    "name": "indeed-mcp"
+                }],
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60
         )
 
         data = res.json()
-        raw  = ""
+
+        # check for API errors
+        if res.status_code != 200:
+            print(f"  API error {res.status_code}: {data}")
+            return []
+
+        raw = ""
         for block in data.get("content", []):
             if block.get("type") == "text":
                 raw += block["text"]
@@ -84,6 +95,7 @@ Return ONLY the raw JSON array. No text before or after."""
         if not raw.strip():
             return []
 
+        # strip markdown fences
         if "```" in raw:
             for part in raw.split("```"):
                 part = part.strip()
@@ -102,7 +114,7 @@ Return ONLY the raw JSON array. No text before or after."""
         return [j for j in jobs if j.get("url") and j.get("title")]
 
     except Exception as e:
-        print(f"  Error [{query[:50]}]: {e}")
+        print(f"  Error: {e}")
         return []
 
 def send_telegram(text):
@@ -120,6 +132,28 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+def categorise(title: str) -> str:
+    t = title.lower()
+    if any(k in t for k in ["front", "react", "vue", "angular", "ui "]):
+        return "Frontend"
+    elif any(k in t for k in ["back", "api", "node", "java", "python", ".net", "ruby", "golang", "php"]):
+        return "Backend"
+    elif any(k in t for k in ["full", "stack"]):
+        return "Fullstack"
+    elif any(k in t for k in ["devops", "sre", "platform", "cloud", "aws", "azure", "gcp", "infrastructure"]):
+        return "DevOps"
+    elif any(k in t for k in ["data engineer", "analytics", "spark", "kafka"]):
+        return "Data"
+    elif any(k in t for k in ["machine learning", "ml ", "ai ", "llm", "nlp", "scientist"]):
+        return "AI/ML"
+    elif any(k in t for k in ["mobile", "ios", "android", "flutter", "swift", "kotlin"]):
+        return "Mobile"
+    elif any(k in t for k in ["security", "cyber", "infosec"]):
+        return "Security"
+    elif any(k in t for k in ["qa", "test", "quality", "automation"]):
+        return "QA"
+    return "Other"
+
 EMOJI = {
     "Frontend":  "🎨", "Backend":   "⚙️", "Fullstack": "🔄",
     "DevOps":    "☁️", "Data":      "📊", "AI/ML":     "🤖",
@@ -130,7 +164,6 @@ EMOJI = {
 def main():
     print(f"\n[{datetime.now()}] ── Starting job search ──")
 
-    # send hi message every run
     send_telegram(
         f"👋 <b>Hi! Job search starting...</b>\n"
         f"🕐 {datetime.now().strftime('%d %b %Y, %H:%M')}"
@@ -139,9 +172,12 @@ def main():
     seen     = load_seen()
     all_jobs = []
 
-    for i, query in enumerate(SEARCHES, 1):
-        print(f"  [{i}/{len(SEARCHES)}] {query[:65]}...")
-        jobs = search_jobs(query)
+    for i, params in enumerate(SEARCHES, 1):
+        print(f"  [{i}/{len(SEARCHES)}] {params['search']} in {params['location']}...")
+        jobs = search_indeed(params)
+        # override category using title-based classifier
+        for job in jobs:
+            job["category"] = categorise(job.get("title", ""))
         print(f"  Found: {len(jobs)}")
         all_jobs.extend(jobs)
 
@@ -201,3 +237,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+---
+
+## Why this works now
+
+The web search approach **fundamentally cannot return structured job JSON** — Claude just describes what it finds. But the **Indeed MCP via Claude API** does return real structured job data with IDs and apply URLs — which is exactly what works when you use it here in this chat.
+
+The key header that was missing before that caused MCP to silently fail:
+```
+"anthropic-beta": "mcp-client-2025-04-04"
