@@ -18,37 +18,50 @@ def save_seen(ids):
     with open(SEEN_JOBS_FILE, "w") as f:
         json.dump(list(ids), f)
 
-def search_jobs_via_claude():
+# ── searches across multiple job sites including indeed.ie ───────
+SEARCHES = [
+    "site:ie.indeed.com software engineer Dublin 2026",
+    "site:ie.indeed.com frontend developer Dublin 2026",
+    "site:ie.indeed.com backend developer Dublin 2026",
+    "site:ie.indeed.com fullstack developer Dublin 2026",
+    "site:ie.indeed.com devops cloud engineer Dublin 2026",
+    "site:ie.indeed.com data engineer Dublin 2026",
+    "site:ie.indeed.com machine learning AI engineer Dublin 2026",
+    "site:ie.indeed.com mobile developer Dublin 2026",
+    "site:irishjobs.ie software engineer developer Dublin 2026",
+    "site:irishjobs.ie devops data engineer Dublin 2026",
+    "site:jobs.ie software developer engineer Dublin 2026",
+    "site:linkedin.com/jobs software engineer Dublin Ireland 2026",
+    "site:linkedin.com/jobs frontend backend developer Dublin Ireland 2026",
+    "site:linkedin.com/jobs devops data AI engineer Dublin Ireland 2026",
+]
+
+def search_jobs(query: str) -> list:
     today = datetime.now().strftime("%B %d, %Y")
-    prompt = f"""Today is {today}. Use web search to find the latest tech job postings in Dublin, Ireland posted in the last 7 days.
+    prompt = f"""Today is {today}.
 
-Search for these roles on jobs.ie, irishjobs.ie, linkedin.com/jobs, and indeed.ie:
-- Software Engineer Dublin
-- Frontend Developer Dublin
-- Backend Developer Dublin
-- Fullstack Developer Dublin
-- DevOps Cloud Engineer Dublin
-- Data Engineer Dublin
-- AI Machine Learning Engineer Dublin
-- Mobile Developer Dublin
-- Cybersecurity Engineer Dublin
-- QA Engineer Dublin
+Search the web for this query: {query}
 
-For every job found return ONLY a raw JSON array (no markdown, no explanation, no code fences):
+Look through every search result carefully.
+Extract each individual job posting you find.
+For each job return it in this exact JSON format.
+
+Return ONLY a raw JSON array, no markdown fences, no explanation, nothing else:
 [
   {{
-    "id": "unique_string_based_on_company_and_title",
-    "title": "Job Title",
-    "company": "Company Name",
-    "location": "Dublin, Ireland",
-    "salary": "salary range or null",
-    "posted": "date posted",
-    "url": "direct apply url",
+    "id": "companyname-jobtitle-location-uniquestring",
+    "title": "exact job title",
+    "company": "company name",
+    "location": "city, country",
+    "salary": "salary range if shown, else null",
+    "posted": "date posted if shown, else null",
+    "url": "full direct URL to job posting",
     "category": "Frontend|Backend|Fullstack|DevOps|Data|AI/ML|Mobile|Security|QA|Other"
   }}
 ]
 
-Return at least 20 jobs. Return ONLY the raw JSON array, nothing else."""
+If no job postings found return exactly: []
+Return ONLY the raw JSON array. Nothing before it, nothing after it."""
 
     try:
         res = httpx.post(
@@ -60,27 +73,21 @@ Return at least 20 jobs. Return ONLY the raw JSON array, nothing else."""
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 8000,
-                "tools": [
-                    {
-                        "type": "web_search_20250305",
-                        "name": "web_search"
-                    }
-                ],
+                "max_tokens": 4000,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=120
+            timeout=60
         )
 
         data = res.json()
-        print(f"API status: {res.status_code}")
-
-        raw = ""
+        raw  = ""
         for block in data.get("content", []):
             if block.get("type") == "text":
                 raw += block["text"]
 
-        print(f"Response preview: {raw[:300]}")
+        if not raw.strip():
+            return []
 
         # strip markdown fences if present
         if "```" in raw:
@@ -95,16 +102,12 @@ Return at least 20 jobs. Return ONLY the raw JSON array, nothing else."""
         start = raw.find("[")
         end   = raw.rfind("]") + 1
         if start == -1:
-            print("No JSON found in response")
-            print(f"Full response: {raw[:1000]}")
             return []
 
-        jobs = json.loads(raw[start:end])
-        print(f"Parsed {len(jobs)} jobs")
-        return jobs
+        return json.loads(raw[start:end])
 
     except Exception as e:
-        print(f"Claude API error: {e}")
+        print(f"  Error [{query[:50]}]: {e}")
         return []
 
 def send_telegram(text):
@@ -123,22 +126,35 @@ def send_telegram(text):
         print(f"Telegram error: {e}")
 
 EMOJI = {
-    "Frontend": "🎨", "Backend": "⚙️", "Fullstack": "🔄",
-    "DevOps": "☁️",  "Data": "📊",    "AI/ML": "🤖",
-    "Mobile": "📱",  "Security": "🔒", "QA": "🧪", "Other": "💻"
+    "Frontend":  "🎨", "Backend":  "⚙️", "Fullstack": "🔄",
+    "DevOps":    "☁️", "Data":     "📊", "AI/ML":     "🤖",
+    "Mobile":    "📱", "Security": "🔒", "QA":        "🧪",
+    "Other":     "💻"
 }
 
 def main():
     print(f"\n[{datetime.now()}] ── Starting job search ──")
-    seen = load_seen()
-    jobs = search_jobs_via_claude()
+    seen     = load_seen()
+    all_jobs = []
 
-    if not jobs:
-        print("No jobs returned.")
-        return
+    for i, query in enumerate(SEARCHES, 1):
+        print(f"  [{i}/{len(SEARCHES)}] {query[:65]}...")
+        jobs = search_jobs(query)
+        print(f"  Found: {len(jobs)}")
+        all_jobs.extend(jobs)
 
-    new_jobs = [j for j in jobs if str(j.get("id", "")) not in seen]
-    print(f"Total: {len(jobs)} | New: {len(new_jobs)}")
+    # deduplicate within this run
+    seen_this_run = set()
+    unique_jobs   = []
+    for job in all_jobs:
+        jid = str(job.get("id", "")).lower().strip()
+        if jid and jid not in seen_this_run:
+            unique_jobs.append(job)
+            seen_this_run.add(jid)
+
+    # filter already sent
+    new_jobs = [j for j in unique_jobs if str(j.get("id","")).lower() not in seen]
+    print(f"\nTotal: {len(all_jobs)} | Unique: {len(unique_jobs)} | New: {len(new_jobs)}")
 
     if not new_jobs:
         print("No new jobs to send.")
@@ -150,7 +166,7 @@ def main():
         cat = job.get("category", "Other")
         grouped.setdefault(cat, []).append(job)
 
-    # send summary
+    # send summary message
     summary = "\n".join([
         f"  {EMOJI.get(c,'💻')} {c}: {len(j)}"
         for c, j in sorted(grouped.items())
@@ -160,7 +176,7 @@ def main():
         f"🕐 {datetime.now().strftime('%d %b %Y, %H:%M')}\n\n{summary}"
     )
 
-    # send each category
+    # send jobs grouped by category
     for cat, cat_jobs in sorted(grouped.items()):
         em = EMOJI.get(cat, "💻")
         send_telegram(f"━━━━━━━━━━━━━━━━\n{em} <b>{cat}</b> — {len(cat_jobs)} jobs")
@@ -168,16 +184,16 @@ def main():
             send_telegram(
                 f"💼 <b>{job.get('title','')}</b>\n"
                 f"🏢 {job.get('company','')}\n"
-                f"📍 {job.get('location', 'Dublin')}\n"
+                f"📍 {job.get('location','Dublin')}\n"
                 f"💰 {job.get('salary') or 'Not specified'}\n"
-                f"📅 {job.get('posted', '')}\n"
+                f"📅 {job.get('posted','')}\n"
                 f"🔗 <a href='{job.get('url','')}'>Apply now</a>"
             )
-            seen.add(str(job.get("id", "")))
+            seen.add(str(job.get("id","")).lower())
             print(f"  Sent: {job.get('title')} @ {job.get('company')}")
 
     save_seen(seen)
-    print(f"[{datetime.now()}] Done — sent {len(new_jobs)} jobs.")
+    print(f"\n[{datetime.now()}] Done — sent {len(new_jobs)} jobs.")
 
 if __name__ == "__main__":
     main()
