@@ -6,7 +6,7 @@ from datetime import datetime
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-SEEN_JOBS_FILE    = "/root/seen_jobs.json"
+SEEN_JOBS_FILE    = "seen_jobs.json"
 
 def load_seen():
     if os.path.exists(SEEN_JOBS_FILE):
@@ -18,50 +18,45 @@ def save_seen(ids):
     with open(SEEN_JOBS_FILE, "w") as f:
         json.dump(list(ids), f)
 
-# ── searches across multiple job sites including indeed.ie ───────
 SEARCHES = [
-    "site:ie.indeed.com software engineer Dublin 2026",
-    "site:ie.indeed.com frontend developer Dublin 2026",
-    "site:ie.indeed.com backend developer Dublin 2026",
-    "site:ie.indeed.com fullstack developer Dublin 2026",
-    "site:ie.indeed.com devops cloud engineer Dublin 2026",
-    "site:ie.indeed.com data engineer Dublin 2026",
-    "site:ie.indeed.com machine learning AI engineer Dublin 2026",
-    "site:ie.indeed.com mobile developer Dublin 2026",
-    "site:irishjobs.ie software engineer developer Dublin 2026",
-    "site:irishjobs.ie devops data engineer Dublin 2026",
-    "site:jobs.ie software developer engineer Dublin 2026",
-    "site:linkedin.com/jobs software engineer Dublin Ireland 2026",
-    "site:linkedin.com/jobs frontend backend developer Dublin Ireland 2026",
-    "site:linkedin.com/jobs devops data AI engineer Dublin Ireland 2026",
+    "software engineer jobs Dublin Ireland indeed.ie 2026",
+    "frontend developer jobs Dublin Ireland indeed.ie 2026",
+    "backend developer jobs Dublin Ireland indeed.ie 2026",
+    "fullstack developer jobs Dublin Ireland indeed.ie 2026",
+    "devops cloud engineer jobs Dublin Ireland indeed.ie 2026",
+    "data engineer scientist jobs Dublin Ireland indeed.ie 2026",
+    "machine learning AI engineer jobs Dublin Ireland indeed.ie 2026",
+    "mobile iOS Android developer jobs Dublin Ireland indeed.ie 2026",
+    "cybersecurity engineer jobs Dublin Ireland indeed.ie 2026",
+    "QA automation engineer jobs Dublin Ireland indeed.ie 2026",
 ]
 
 def search_jobs(query: str) -> list:
     today = datetime.now().strftime("%B %d, %Y")
     prompt = f"""Today is {today}.
 
-Search the web for this query: {query}
+Search the web for: "{query}"
 
-Look through every search result carefully.
-Extract each individual job posting you find.
-For each job return it in this exact JSON format.
+From ALL the search results, extract every individual job posting you can find.
+Look carefully at results from indeed.ie, irishjobs.ie, jobs.ie, linkedin.com.
 
-Return ONLY a raw JSON array, no markdown fences, no explanation, nothing else:
+For each job posting return it in this JSON format.
+Return ONLY a raw JSON array, nothing else, no markdown, no explanation:
 [
   {{
-    "id": "companyname-jobtitle-location-uniquestring",
+    "id": "companyname-jobtitle-uniqueid",
     "title": "exact job title",
     "company": "company name",
-    "location": "city, country",
-    "salary": "salary range if shown, else null",
-    "posted": "date posted if shown, else null",
-    "url": "full direct URL to job posting",
+    "location": "Dublin, Ireland",
+    "salary": "salary if shown else null",
+    "posted": "date posted if shown else null",
+    "url": "full direct URL to the job posting",
     "category": "Frontend|Backend|Fullstack|DevOps|Data|AI/ML|Mobile|Security|QA|Other"
   }}
 ]
 
-If no job postings found return exactly: []
-Return ONLY the raw JSON array. Nothing before it, nothing after it."""
+If no jobs found return: []
+Return ONLY the raw JSON array. No text before or after."""
 
     try:
         res = httpx.post(
@@ -89,7 +84,6 @@ Return ONLY the raw JSON array. Nothing before it, nothing after it."""
         if not raw.strip():
             return []
 
-        # strip markdown fences if present
         if "```" in raw:
             for part in raw.split("```"):
                 part = part.strip()
@@ -104,7 +98,8 @@ Return ONLY the raw JSON array. Nothing before it, nothing after it."""
         if start == -1:
             return []
 
-        return json.loads(raw[start:end])
+        jobs = json.loads(raw[start:end])
+        return [j for j in jobs if j.get("url") and j.get("title")]
 
     except Exception as e:
         print(f"  Error [{query[:50]}]: {e}")
@@ -126,14 +121,21 @@ def send_telegram(text):
         print(f"Telegram error: {e}")
 
 EMOJI = {
-    "Frontend":  "🎨", "Backend":  "⚙️", "Fullstack": "🔄",
-    "DevOps":    "☁️", "Data":     "📊", "AI/ML":     "🤖",
-    "Mobile":    "📱", "Security": "🔒", "QA":        "🧪",
+    "Frontend":  "🎨", "Backend":   "⚙️", "Fullstack": "🔄",
+    "DevOps":    "☁️", "Data":      "📊", "AI/ML":     "🤖",
+    "Mobile":    "📱", "Security":  "🔒", "QA":        "🧪",
     "Other":     "💻"
 }
 
 def main():
     print(f"\n[{datetime.now()}] ── Starting job search ──")
+
+    # send hi message every run
+    send_telegram(
+        f"👋 <b>Hi! Job search starting...</b>\n"
+        f"🕐 {datetime.now().strftime('%d %b %Y, %H:%M')}"
+    )
+
     seen     = load_seen()
     all_jobs = []
 
@@ -158,6 +160,7 @@ def main():
 
     if not new_jobs:
         print("No new jobs to send.")
+        send_telegram("✅ <b>Search complete.</b> No new jobs found this round.")
         return
 
     # group by category
@@ -166,7 +169,7 @@ def main():
         cat = job.get("category", "Other")
         grouped.setdefault(cat, []).append(job)
 
-    # send summary message
+    # send summary
     summary = "\n".join([
         f"  {EMOJI.get(c,'💻')} {c}: {len(j)}"
         for c, j in sorted(grouped.items())
@@ -176,7 +179,7 @@ def main():
         f"🕐 {datetime.now().strftime('%d %b %Y, %H:%M')}\n\n{summary}"
     )
 
-    # send jobs grouped by category
+    # send jobs by category
     for cat, cat_jobs in sorted(grouped.items()):
         em = EMOJI.get(cat, "💻")
         send_telegram(f"━━━━━━━━━━━━━━━━\n{em} <b>{cat}</b> — {len(cat_jobs)} jobs")
@@ -193,6 +196,7 @@ def main():
             print(f"  Sent: {job.get('title')} @ {job.get('company')}")
 
     save_seen(seen)
+    send_telegram(f"✅ <b>Done!</b> Sent {len(new_jobs)} new jobs. Next run in 30 mins.")
     print(f"\n[{datetime.now()}] Done — sent {len(new_jobs)} jobs.")
 
 if __name__ == "__main__":
