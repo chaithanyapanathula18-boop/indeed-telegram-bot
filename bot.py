@@ -145,12 +145,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
----
-
-## Step 3 — Create `requirements.txt`
-
-Create a file called **`requirements.txt`**:
-```
-httpx==0.27.0
+    
