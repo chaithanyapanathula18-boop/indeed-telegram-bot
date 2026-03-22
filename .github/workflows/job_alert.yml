@@ -1,38 +1,24 @@
-name: Indeed Telegram Job Alert
+name: Job Bot
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    - cron: "*/30 * * * *"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Restore seen jobs cache
-        uses: actions/cache@v3
-        with:
-          path: seen_jobs.json
-          key: seen-jobs-cache
-          restore-keys: seen-jobs-cache
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install requests
 
       - name: Run bot
-        env:
-          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python bot.py
 
-      - name: Save seen jobs cache
-        uses: actions/cache@v3
-        with:
-          path: seen_jobs.json
-          key: seen-jobs-cache
+    env:
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAT_ID: ${{ secrets.CHAT_ID }}
