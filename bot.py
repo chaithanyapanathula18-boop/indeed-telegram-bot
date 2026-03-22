@@ -7,7 +7,10 @@ APIFY_TOKEN = os.environ.get("APIFY_TOKEN")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-DATASET_URL = f"https://api.apify.com/v2/key-value-stores/default/records/seen_jobs?token={APIFY_TOKEN}"
+# 🔥 IMPORTANT: create this store in Apify dashboard
+KV_STORE = "job-bot-store"
+
+DATASET_URL = f"https://api.apify.com/v2/key-value-stores/{KV_STORE}/records/seen_jobs?token={APIFY_TOKEN}"
 
 SEARCHES = [
     "software engineer",
@@ -27,7 +30,8 @@ SEARCHES = [
     "ai engineer"
 ]
 
-ACTOR_ID = "misceres/indeed-scraper"
+# ✅ WORKING ACTOR
+ACTOR_ID = "dan.scraper/linkedin-jobs-scraper"
 
 
 # -------------------------
@@ -36,13 +40,16 @@ ACTOR_ID = "misceres/indeed-scraper"
 def load_seen_jobs():
     try:
         res = requests.get(DATASET_URL, timeout=30)
+
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list):
-                print(f"[load_seen_jobs] Loaded {len(data)} seen jobs.")
+                print(f"[load_seen_jobs] Loaded {len(data)} jobs")
                 return data
-        else:
-            print(f"[load_seen_jobs] Unexpected status: {res.status_code} - {res.text}")
+
+        elif res.status_code == 404:
+            print("[load_seen_jobs] No store yet → starting fresh")
+
     except Exception as e:
         print(f"[load_seen_jobs] Error: {e}")
 
@@ -55,44 +62,46 @@ def load_seen_jobs():
 def save_seen_jobs(seen_jobs):
     try:
         res = requests.put(DATASET_URL, json=seen_jobs, timeout=30)
-        print(f"[save_seen_jobs] Saved {len(seen_jobs)} jobs. Status: {res.status_code}")
+        print(f"[save_seen_jobs] Saved {len(seen_jobs)} jobs")
     except Exception as e:
         print(f"[save_seen_jobs] Error: {e}")
 
 
 # -------------------------
-# Fetch jobs from Apify
+# Fetch jobs
 # -------------------------
 def fetch_jobs(search):
     url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items?token={APIFY_TOKEN}"
 
     payload = {
-        "position": search,
-        "country": "IE",
-        "maxItems": 15
+        "keywords": search,
+        "location": "Ireland",
+        "maxItems": 10
     }
 
     try:
-        print(f"[fetch_jobs] Fetching jobs for: '{search}'")
+        print(f"[fetch_jobs] Searching: {search}")
+
         res = requests.post(url, json=payload, timeout=120)
-        print(f"[fetch_jobs] Status: {res.status_code}")
+
+        if res.status_code != 200:
+            print(f"[fetch_jobs] ERROR {res.status_code}: {res.text}")
+            return []
 
         data = res.json()
 
         if isinstance(data, list):
-            print(f"[fetch_jobs] Got {len(data)} jobs for '{search}'")
+            print(f"[fetch_jobs] Found {len(data)} jobs")
             return data
-        else:
-            print(f"[fetch_jobs] Unexpected response for '{search}': {data}")
 
     except Exception as e:
-        print(f"[fetch_jobs] Error for '{search}': {e}")
+        print(f"[fetch_jobs] Error: {e}")
 
     return []
 
 
 # -------------------------
-# Send Telegram message
+# Send Telegram
 # -------------------------
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -108,22 +117,20 @@ def send_telegram(msg):
             timeout=20
         )
 
-        if res.status_code != 200:
-            print(f"[send_telegram] Failed: {res.status_code} - {res.text}")
+        if res.status_code == 200:
+            print("[telegram] sent")
         else:
-            print("[send_telegram] Message sent successfully.")
+            print(f"[telegram] failed: {res.text}")
 
     except Exception as e:
-        print(f"[send_telegram] Error: {e}")
+        print(f"[telegram] error: {e}")
 
 
 # -------------------------
-# Main logic
+# Main
 # -------------------------
 def main():
-    print(f"[main] CHAT_ID set: {'yes' if CHAT_ID else 'NO - MISSING!'}")
-    print(f"[main] TELEGRAM_TOKEN set: {'yes' if TELEGRAM_TOKEN else 'NO - MISSING!'}")
-    print(f"[main] APIFY_TOKEN set: {'yes' if APIFY_TOKEN else 'NO - MISSING!'}")
+    print("=== JOB BOT START ===")
 
     seen_jobs = load_seen_jobs()
     new_seen = set(seen_jobs)
@@ -138,7 +145,7 @@ def main():
             if not isinstance(job, dict):
                 continue
 
-            job_id = job.get("id") or job.get("url") or job.get("applyUrl")
+            job_id = job.get("id") or job.get("applyUrl") or job.get("url")
 
             if not job_id:
                 continue
@@ -146,10 +153,10 @@ def main():
             if job_id in new_seen:
                 continue
 
-            title = job.get("positionName") or job.get("title") or "N/A"
-            company = job.get("company") or job.get("companyName") or "N/A"
+            title = job.get("title") or "N/A"
+            company = job.get("companyName") or "N/A"
             location = job.get("location") or "N/A"
-            link = job.get("url") or job.get("applyUrl") or "N/A"
+            link = job.get("applyUrl") or job.get("url") or "N/A"
 
             message = (
                 f"🚀 {title}\n"
@@ -171,9 +178,9 @@ def main():
         if sent_count >= MAX_PER_RUN:
             break
 
-    print(f"[main] Done. Sent {sent_count} new job(s).")
-
     save_seen_jobs(list(new_seen))
+
+    print(f"=== DONE: sent {sent_count} jobs ===")
 
 
 if __name__ == "__main__":
