@@ -3,7 +3,7 @@ name: Job Bot
 on:
   schedule:
     - cron: "*/30 * * * *"
-      workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   run-bot:
