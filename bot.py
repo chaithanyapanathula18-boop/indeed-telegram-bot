@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 import time
 
@@ -7,7 +6,6 @@ APIFY_TOKEN = os.environ.get("APIFY_TOKEN")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# 🔥 IMPORTANT: create this store in Apify dashboard
 KV_STORE = "job-bot-store"
 
 DATASET_URL = f"https://api.apify.com/v2/key-value-stores/{KV_STORE}/records/seen_jobs?token={APIFY_TOKEN}"
@@ -30,7 +28,6 @@ SEARCHES = [
     "ai engineer"
 ]
 
-# ✅ WORKING ACTOR
 ACTOR_ID = "dan.scraper/linkedin-jobs-scraper"
 
 
@@ -40,16 +37,13 @@ ACTOR_ID = "dan.scraper/linkedin-jobs-scraper"
 def load_seen_jobs():
     try:
         res = requests.get(DATASET_URL, timeout=30)
-
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list):
                 print(f"[load_seen_jobs] Loaded {len(data)} jobs")
                 return data
-
-        elif res.status_code == 404:
-            print("[load_seen_jobs] No store yet → starting fresh")
-
+        else:
+            print("[load_seen_jobs] Starting fresh")
     except Exception as e:
         print(f"[load_seen_jobs] Error: {e}")
 
@@ -61,17 +55,17 @@ def load_seen_jobs():
 # -------------------------
 def save_seen_jobs(seen_jobs):
     try:
-        res = requests.put(DATASET_URL, json=seen_jobs, timeout=30)
+        requests.put(DATASET_URL, json=seen_jobs, timeout=30)
         print(f"[save_seen_jobs] Saved {len(seen_jobs)} jobs")
     except Exception as e:
         print(f"[save_seen_jobs] Error: {e}")
 
 
 # -------------------------
-# Fetch jobs
+# Fetch jobs using correct Apify flow
 # -------------------------
 def fetch_jobs(search):
-    url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+    run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
 
     payload = {
         "keywords": search,
@@ -80,19 +74,37 @@ def fetch_jobs(search):
     }
 
     try:
-        print(f"[fetch_jobs] Searching: {search}")
+        print(f"[fetch_jobs] Running actor: {search}")
 
-        res = requests.post(url, json=payload, timeout=120)
+        # 1️⃣ Start run
+        run_res = requests.post(run_url, json=payload, timeout=60)
+        run_data = run_res.json()
 
-        if res.status_code != 200:
-            print(f"[fetch_jobs] ERROR {res.status_code}: {res.text}")
+        dataset_id = run_data.get("data", {}).get("defaultDatasetId")
+
+        if not dataset_id:
+            print("[fetch_jobs] No dataset ID")
             return []
 
-        data = res.json()
+        print(f"[fetch_jobs] Dataset: {dataset_id}")
 
-        if isinstance(data, list):
-            print(f"[fetch_jobs] Found {len(data)} jobs")
-            return data
+        # 2️⃣ Wait for results
+        time.sleep(10)
+
+        # 3️⃣ Fetch dataset
+        dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}"
+
+        data_res = requests.get(dataset_url, timeout=60)
+
+        if data_res.status_code != 200:
+            print("[fetch_jobs] Failed dataset fetch:", data_res.text)
+            return []
+
+        jobs = data_res.json()
+
+        print(f"[fetch_jobs] Found {len(jobs)} jobs")
+
+        return jobs
 
     except Exception as e:
         print(f"[fetch_jobs] Error: {e}")
@@ -120,7 +132,7 @@ def send_telegram(msg):
         if res.status_code == 200:
             print("[telegram] sent")
         else:
-            print(f"[telegram] failed: {res.text}")
+            print("[telegram] failed:", res.text)
 
     except Exception as e:
         print(f"[telegram] error: {e}")
